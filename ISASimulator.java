@@ -3,16 +3,22 @@ package org.unibl.etf.ar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Scanner;
 import java.util.function.BiConsumer;
-import java.util.function.BiFunction;
 import java.util.function.Consumer;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 
 public class ISASimulator {
+	
+	//Index for the interpretation of the code
+	public static int i = 0;
+	
+	public static Scanner scanner = new Scanner(System.in);
 
 	//Registers
 	public static final HashMap<String, Long> registers = new HashMap<>();
@@ -25,13 +31,30 @@ public class ISASimulator {
 	public static final HashMap<String, Consumer<String>> unaryOperators = new HashMap<>();
 	//Map of binary operators
 	public static final HashMap<String, BiConsumer<String, String>> binaryOperators = new HashMap<>();
+	
+	//Keywords for debugging mode
 	public static final String breakpoint = "BREAKPOINT";
+	public static final String next = "NEXT";
+	public static final String cont = "CONTINUE";
+	
+	//Debugging mode execution
+	public static boolean debuggingMode = false;
+	
+	//Map of labels for jumps
+	public static final HashMap<String, Integer> labels = new HashMap<>();
+	
+	//Variables for the result of CMP instruction
+	public static boolean equalResult, lessResult;
 	
 	//Code to interpret
 	public static List<String> code;
+	//Validity of the code
 	public static boolean isValid = true;
 	//List of errors
 	public static final ArrayList<String> errorList = new ArrayList<>();
+	
+	//Locations in memory storing machine code
+	public static final ArrayList<Long> ripValues = new ArrayList<>();
 	
 	public static void setRegisters() {
 		registers.put("RAX", (long)0);
@@ -40,17 +63,24 @@ public class ISASimulator {
 		registers.put("RDX", (long)0);
 		registers.put("RSI", (long)0);
 		registers.put("RDI", (long)0);
+		registers.put("RIP", (long)0);
 	}
 	
 	public static void setKeywordsAndOperators() {
 		unaryOperators.put("NOT", ISASimulator::not);
+		unaryOperators.put("JMP", ISASimulator::jmp);
+		unaryOperators.put("JE", ISASimulator::je);
+		unaryOperators.put("JNE", ISASimulator::jne);
+		unaryOperators.put("JGE", ISASimulator::jge);
+		unaryOperators.put("JL", ISASimulator::jl);
+		unaryOperators.put("PRINT", ISASimulator::print);
+		unaryOperators.put("SCAN", ISASimulator::scan);
 		binaryOperators.put("ADD", ISASimulator::add);
 		binaryOperators.put("SUB", ISASimulator::sub);
 		binaryOperators.put("AND", ISASimulator::and);
 		binaryOperators.put("OR", ISASimulator::or);
 		binaryOperators.put("MOV", ISASimulator::mov);
-		binaryOperators.put("SCAN", ISASimulator::scan);
-		binaryOperators.put("PRINT", ISASimulator::print);
+		binaryOperators.put("CMP", ISASimulator::cmp);
 		keywords.addAll(unaryOperators.keySet());
 		keywords.addAll(binaryOperators.keySet());
 		keywords.add(breakpoint);
@@ -58,14 +88,19 @@ public class ISASimulator {
 	
 	public static void codeValidation() {
 		//Syntax analysis
-		code.stream().forEach(s -> {
+		for (int i = 0; i < code.size(); i++) {
+			String s = code.get(i);
 			s = s.trim();
 			int index = s.indexOf(' ');
-			if (index == -1 && !keywords.contains(s.toUpperCase()))
+			if (index == -1 && breakpoint.equals(s.toUpperCase()))
+				continue;
+			if (index == -1 && !keywords.contains(s.toUpperCase()) && !s.endsWith(":"))
 			{
 				errorList.add(s);
 				isValid = false; 
 			}
+			else if (index == -1 && s.endsWith(":"))
+				labels.put(s.substring(0, s.length() - 1), i);
 			else 
 			{
 				String keyword = s.split(" ")[0];
@@ -75,14 +110,15 @@ public class ISASimulator {
 					isValid = false;
 				}
 			}
-		});
+		}
 		
 		if (!isValid)
 			return;
 		
 		//Semantic analysis
 		//Check for number of operands
-		//TODO - Check for validity of operands
+		//Check for validity of operands
+		//TODO - Check if a number is the first operand
 		code.stream().forEach(s -> {
 			s = s.trim();
 			int index = s.indexOf(' ');
@@ -102,124 +138,192 @@ public class ISASimulator {
 			}
 			Arrays.asList(operands).stream().forEach(o -> {
 				String oprnd = o.toUpperCase();
-				if (!oprnd.startsWith("[") && !registers.containsKey(oprnd) && !isNumber(oprnd)
-						|| oprnd.startsWith("[") && !registers.containsKey(oprnd.substring(1, oprnd.length() - 1)))
+				if (!oprnd.startsWith("[") && !registers.containsKey(oprnd) && !isNumber(oprnd) && !labels.containsKey(o))
 				{
 					isValid = false;
 					errorList.add(o);
+				}
+				else if (isNumber(oprnd))
+				{
+					if (!oprnd.startsWith("0X"))
+						addresses.put(Long.parseLong(oprnd), (byte)0);
+					else
+						addresses.put(Long.parseLong(oprnd.substring(2), 16), (byte)0);
+				}
+				else if (oprnd.startsWith("["))
+				{
+					if (!oprnd.endsWith("]"))
+					{
+						isValid = false;
+						errorList.add(o);
+						return;
+					}
+					String address = oprnd.substring(1, oprnd.length() - 1);
+					/*if (!registers.containsKey(address) && !memories.containsKey(address) &&
+							(!address.startsWith("0x") || address.startsWith("0x") && !addresses.containsKey(Long.parseLong(address, 16))))
+					{
+						isValid = false;
+						errorList.add(o);
+					}*/
+					if (registers.containsKey(address))
+						return;
+					if (!isNumber(address))
+					{
+						isValid = false;
+						errorList.add(address);
+					}
+					else if (!address.startsWith("0X"))
+						addresses.put(Long.parseLong(address), (byte)0);
+					else
+						addresses.put(Long.parseLong(address.substring(2), 16), (byte)0);
 				}
 			});
 		});
 	}
 	
+	public static void jmp(String arg) {
+		i = labels.get(arg);
+	}
+	
+	public static void je(String arg) {
+		if (equalResult)
+			i = labels.get(arg);
+	}
+	
+	public static void jne(String arg) {
+		if (!equalResult) 
+			i = labels.get(arg);
+	}
+	
+	public static void jge(String arg) {
+		if (!lessResult) 
+			i = labels.get(arg);
+	}
+	
+	public static void jl(String arg) {
+		if (lessResult)
+			i = labels.get(arg);
+	}
+	
 	public static void not(String arg) {
-		if (!arg.startsWith("[")) {
-			if (registers.containsKey(arg))
-				registers.put(arg, ~registers.get(arg));
-		}
+		arg = arg.toUpperCase();
+		putValue(arg, ~getValue(arg));
 	}
 	
 	public static void add(String arg1, String arg2) {
-		if (!arg1.startsWith("["))
-		{
-			long result = 0;
-			if (!arg2.startsWith("[")) {
-				if (registers.containsKey(arg2))
-					result = registers.get(arg1) + registers.get(arg2);
-				else
-					result = registers.get(arg1) + Long.parseLong(arg2);
-			}
-			//else
-			registers.put(arg1, result);
-		}
+		long result = getValue(arg1) + getValue(arg2);
+		putValue(arg1, result);
 	}
 	
 	public static void sub(String arg1, String arg2) {
-		if (!arg1.startsWith("["))
-		{
-			long result = 0;
-			if (!arg2.startsWith("[")) {
-				if (registers.containsKey(arg2))
-					result = registers.get(arg1) - registers.get(arg2);
-				else
-					result = registers.get(arg1) - Long.parseLong(arg2);
-			}
-			//else
-			registers.put(arg1, result);
-		}
+		long result = getValue(arg1) - getValue(arg2);
+		putValue(arg1, result);
 	}
 	
 	public static void and(String arg1, String arg2) {
-		if (!arg1.startsWith("["))
-		{
-			long result = 0;
-			if (!arg2.startsWith("[")) {
-				if (registers.containsKey(arg2))
-					result = registers.get(arg1) & registers.get(arg2);
-				else
-					result = registers.get(arg1) & Long.parseLong(arg2);
-			}
-			//else
-			registers.put(arg1, result);
-		}
+		long result = getValue(arg1) & getValue(arg2);
+		putValue(arg1, result);
 	}
 	
 	public static void or(String arg1, String arg2) {
-		if (!arg1.startsWith("["))
-		{
-			long result = 0;
-			if (!arg2.startsWith("[")) {
-				if (registers.containsKey(arg2))
-					result = registers.get(arg1) | registers.get(arg2);
-				else
-					result = registers.get(arg1) | Long.parseLong(arg2);
-			}
-			//else
-			registers.put(arg1, result);
-		}
+		long result = getValue(arg1) | getValue(arg2);
+		putValue(arg1, result);
 	}
 	
 	public static void mov(String arg1, String arg2) {
-		if (!arg1.startsWith("["))
-		{
-			if (!arg2.startsWith("[")) {
-				if (registers.containsKey(arg2))
-					registers.put(arg1, registers.get(arg2));
-				else
-					registers.put(arg1, Long.parseLong(arg2));
+		putValue(arg1, getValue(arg2));
+	}
+	
+	//TODO
+	//Check if input is a number, if true store it
+	//if false, it is a string, store it as string
+	public static void scan(String arg) {
+		arg = arg.toUpperCase();
+		String input = scanner.nextLine();
+		if (isNumber(input)) {
+			long result = input.startsWith("0x") || input.startsWith("0X") ? Long.parseLong(input.substring(2), 16) : Long.parseLong(input);
+			putValue(arg, result);
+		} 
+		else {
+			if (!arg.startsWith("[")) {
+				long result = 0;
+				for (int i = 0; i < 8 && i < input.length(); i++)
+					result = result * 100 + (int)input.charAt(i);
+				putValue(arg, result);
 			}
-			//else
+			else {
+				putValue(arg, (int)input.charAt(0));
+			}
 		}
 	}
 	
-	//TODO
-	public static void scan(String arg1, String arg2) {
-		
+	public static void print(String arg) {
+		arg = arg.toUpperCase();
+		System.out.println(getValue(arg));
 	}
 	
-	//TODO
-	public static void print(String arg1, String arg2) {
-		
+	public static void cmp(String arg1, String arg2) {
+		long num1 = getValue(arg1), num2 = getValue(arg2);
+		equalResult = num1 == num2;
+		lessResult = num1 < num2;
 	}
 	
 	public static void interpretCode() {
-		for (String line : code) {
+		for (i = 0; i < code.size(); i++) {
+			String line = code.get(i);
 			line = line.trim();
+			int index = line.indexOf(' ');
+			if (index == -1) {
+				if (!breakpoint.equals(line.toUpperCase()))
+					continue;
+				debuggingMode = true;
+				debug();
+				continue;
+			}
 			String operator = line.split(" ")[0];
 			operator = operator.toUpperCase();
-			String args = line.substring(line.indexOf(' '));
-			args = args.replaceAll(" ", "");
-			args = args.toUpperCase();
-			if (unaryOperators.containsKey(operator)) {
-				unaryOperators.get(operator).accept(args);
-			}
+			String args1 = line.substring(line.indexOf(' '));
+			args1 = args1.replaceAll(" ", "");
+			String args = args1.toUpperCase();
+			if (unaryOperators.containsKey(operator))
+				unaryOperators.get(operator).accept(args1);
 			else if (binaryOperators.containsKey(operator)) {
 				String arg1 = args.split(",")[0], arg2 = args.split(",")[1];
 				binaryOperators.get(operator).accept(arg1, arg2);
 			}
-			registers.keySet().stream().forEach(s -> System.out.println(s + " " + registers.get(s)));
-			System.out.println();
+			if (debuggingMode)
+				debug();
+			//registers.keySet().stream().forEach(s -> System.out.println(s + " " + registers.get(s)));
+			//System.out.println();
 		}
+	}
+	
+	public static void debug() {
+		System.out.println();
+		registers.keySet().stream().forEach(reg -> System.out.println(reg + " " + registers.get(reg)));
+		System.out.println("Enter memory address for examination or NEXT or CONTINUE:");
+		String input = "";
+		do {
+			input = scanner.nextLine();
+			if (isNumber(input)) {
+				if (input.startsWith("0x") || input.startsWith("0X")) {
+					long address = Long.parseLong(input.substring(2), 16);
+					System.out.println(input + ": " + (addresses.containsKey(address) ? addresses.get(address) : 0));
+				}
+				else {
+					long address = Long.parseLong(input);
+					System.out.println(input + ": " + (addresses.containsKey(address) ? addresses.get(address) : 0));
+				}
+			}
+			else if (next.equals(input.toUpperCase()))
+				return;
+			else if (cont.equals(input.toUpperCase())) {
+				debuggingMode = false;
+				return;
+			}
+			else 
+				System.err.println("Invalid command or memory address!");
+		} while (true);
 	}
 	
 	public static void main(String[] args) {
@@ -236,6 +340,7 @@ public class ISASimulator {
 			System.err.println(e.getMessage());
 			return;
 		}
+		
 		codeValidation();
 		if (!isValid)
 		{
@@ -244,7 +349,63 @@ public class ISASimulator {
 			errorList.stream().forEach(s -> System.err.println(s));
 			return;
 		}
+		
+		//Translation to machine code
+		long i = 0x100;
+		for (String line : code) {
+			byte[] arr = line.getBytes();
+			ripValues.add(i);
+			for (byte b : arr) 
+				addresses.put(i++, b);
+			addresses.put(i++, (byte)0);
+		}
+		registers.put("RIP", ripValues.get(0));
+		
 		interpretCode();
+		scanner.close();
+	}
+	
+	private static long getValue(String arg) 
+	{
+		long result = 0;
+		if (!arg.startsWith("[")) {
+			if (registers.containsKey(arg))
+				result = registers.get(arg);
+			else if (arg.startsWith("0X"))
+				result = Long.parseLong(arg.substring(2), 16);
+			else
+				result = Long.parseLong(arg);
+		}
+		else {
+			arg = arg.substring(1, arg.length() - 1);
+			if (registers.containsKey(arg))
+				result = addresses.get(registers.get(arg));
+			else if (arg.startsWith("0X")) {
+				long address = Long.parseLong(arg.substring(2), 16);
+				byte b = addresses.get(address);
+				result = registers.get(arg) + b;
+			}
+			else 
+				result = addresses.get(Long.parseLong(arg));
+		}
+		return result;
+	}
+	
+	private static void putValue(String arg, long result)
+	{
+		if (!arg.startsWith("["))
+			registers.put(arg, result);
+		else {
+			arg = arg.substring(1, arg.length() - 1);
+			if (registers.containsKey(arg))
+				addresses.put(registers.get(arg), (byte)result);
+			else if (arg.startsWith("0X")) {
+				long address = Long.parseLong(arg.substring(2), 16);
+				addresses.put(address, (byte)result);
+			}
+			else
+				addresses.put(Long.parseLong(arg), (byte)result);
+		}
 	}
 	
 	private static boolean isNumber(String s) {
@@ -252,8 +413,13 @@ public class ISASimulator {
 			Long.parseLong(s);
 			return true;
 		} catch(NumberFormatException e) {
-			return false;
+			try {
+				s = s.substring(2);
+				Long.parseLong(s, 16);
+				return true;
+			} catch (NumberFormatException e1) {
+				return false;
+			}
 		}
 	}
-
 }
