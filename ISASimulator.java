@@ -3,13 +3,14 @@ package org.unibl.etf.ar;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Scanner;
 import java.util.function.BiConsumer;
 import java.util.function.Consumer;
+
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
-import java.text.NumberFormat;
 import java.util.ArrayList;
 import java.util.Arrays;
 
@@ -17,6 +18,8 @@ public class ISASimulator {
 	
 	//Index for the interpretation of the code
 	public static int i = 0;
+	//Index for starting execution
+	public static int startExec = 0;
 	
 	public static Scanner scanner = new Scanner(System.in);
 
@@ -55,6 +58,16 @@ public class ISASimulator {
 	
 	//Locations in memory storing machine code
 	public static final ArrayList<Long> ripValues = new ArrayList<>();
+	//OpCodes for instructions
+	public static final HashMap<Byte, String> opCodes = new HashMap<>();
+	
+	//Instruction for switching to machine code execution
+	public static final String switchToMachineCodeExec = "SWITCH";
+	
+	//Self-modifying code
+	public static boolean selfModifyingCode = false;
+	//Address to modify
+	private static long modifyingAddress = 0;
 	
 	public static void setRegisters() {
 		registers.put("RAX", (long)0);
@@ -84,6 +97,13 @@ public class ISASimulator {
 		keywords.addAll(unaryOperators.keySet());
 		keywords.addAll(binaryOperators.keySet());
 		keywords.add(breakpoint);
+		keywords.add(switchToMachineCodeExec);
+	}
+	
+	public static void setOpCodes() {
+		byte i = 0;
+		for (String keyword : keywords)
+			opCodes.put(i++, keyword);
 	}
 	
 	public static void codeValidation() {
@@ -183,26 +203,35 @@ public class ISASimulator {
 	
 	public static void jmp(String arg) {
 		i = labels.get(arg);
+		registers.put("RIP", ripValues.get(i));
 	}
 	
 	public static void je(String arg) {
-		if (equalResult)
+		if (equalResult) {
 			i = labels.get(arg);
+			registers.put("RIP", ripValues.get(i));
+		}
 	}
 	
 	public static void jne(String arg) {
-		if (!equalResult) 
+		if (!equalResult) {
 			i = labels.get(arg);
+			registers.put("RIP", ripValues.get(i));
+		}
 	}
 	
 	public static void jge(String arg) {
-		if (!lessResult) 
+		if (!lessResult) {
 			i = labels.get(arg);
+			registers.put("RIP", ripValues.get(i));
+		}
 	}
 	
 	public static void jl(String arg) {
-		if (lessResult)
+		if (lessResult) {
 			i = labels.get(arg);
+			registers.put("RIP", ripValues.get(i));
+		}
 	}
 	
 	public static void not(String arg) {
@@ -274,11 +303,21 @@ public class ISASimulator {
 			line = line.trim();
 			int index = line.indexOf(' ');
 			if (index == -1) {
-				if (!breakpoint.equals(line.toUpperCase()))
+				//if (!breakpoint.equals(line.toUpperCase()))
+					//continue;
+				if (breakpoint.equals(line.toUpperCase())) {
+					debuggingMode = true;
+					debug();
 					continue;
-				debuggingMode = true;
-				debug();
-				continue;
+				}
+				else if (switchToMachineCodeExec.equals(line.toUpperCase())) {
+					i++;
+					registers.put("RIP", ripValues.get(i));
+					machineCodeExec();
+					continue;
+				}
+				else
+					continue;
 			}
 			String operator = line.split(" ")[0];
 			operator = operator.toUpperCase();
@@ -326,12 +365,83 @@ public class ISASimulator {
 		} while (true);
 	}
 	
+	public static void translateToMachineCode(long address) {
+		//Translation to machine code
+		for (String line : code) {
+			line = line.trim();
+			int index = line.indexOf(' ');
+			if (index == -1 && keywords.contains(line.toUpperCase())) {
+				addresses.put(address, getKeyForValue(line.toUpperCase()));
+				ripValues.add(address++);
+				continue;
+			}
+			else if (index == -1 && !keywords.contains(line.toUpperCase()))
+				continue;
+			else if (index != -1) {
+				addresses.put(address++, getKeyForValue(line.split(" ")[0].toUpperCase()));
+				if ("ADD".equals(line.split(" ")[0].toUpperCase()))
+					modifyingAddress = address - 1;
+			}
+			line = line.substring(index + 1);
+			byte[] arr = line.replace(" ", "").getBytes();
+			ripValues.add(address - 1);
+			for (byte b : arr) 
+				addresses.put(address++, b);
+			addresses.put(address++, (byte)0);
+		}
+		registers.put("RIP", ripValues.get(0));
+	}
+	
+	private static Byte getKeyForValue(String value) {
+		for (Map.Entry<Byte, String> entry : opCodes.entrySet())
+			if (entry.getValue().equals(value))
+				return entry.getKey();
+		return null;
+	}
+	
+	public static void machineCodeExec() {
+		for (; ; i++) {
+			//1 Fetch
+			if (addresses.get(registers.get("RIP")) == null) {
+				if (!selfModifyingCode)
+					return;
+				addresses.put(modifyingAddress, getKeyForValue("SUB"));
+				registers.put("RIP", modifyingAddress);
+				selfModifyingCode = false;
+			}
+			long address = registers.get("RIP");
+			//2 Decode
+			String instruction = opCodes.get(addresses.get(address++));
+			//3 Fetch operands
+			StringBuilder sb = new StringBuilder();
+			while (addresses.get(address) != 0)
+				sb.append((char)(int)addresses.get(address++));
+			registers.put("RIP", address + 1);
+			String operands = sb.toString();
+			//4 Execute
+			if (breakpoint.equals(instruction)) {
+				debuggingMode = true;
+				debug();
+				continue;
+			} 
+			else if (switchToMachineCodeExec.equals(instruction))
+				return;
+			else if (unaryOperators.containsKey(instruction)) 
+				unaryOperators.get(instruction).accept(operands);
+			else if (binaryOperators.containsKey(instruction))
+				binaryOperators.get(instruction).accept(operands.split(",")[0].toUpperCase(), operands.split(",")[1].toUpperCase());
+			if (debuggingMode)
+				debug();
+		}
+	}
+	
 	public static void main(String[] args) {
 		setRegisters();
-		setKeywordsAndOperators();;
+		setKeywordsAndOperators();
+		setOpCodes();
 		if (args.length == 0)
 		{
-			System.err.println("Missing argument.");
+			System.err.println("Missing an argument.");
 			return;
 		}
 		try {
@@ -339,6 +449,9 @@ public class ISASimulator {
 		} catch (IOException e) {
 			System.err.println(e.getMessage());
 			return;
+		}
+		if (args.length == 2 && "true".equals(args[1])) {
+			selfModifyingCode = true;
 		}
 		
 		codeValidation();
@@ -350,17 +463,7 @@ public class ISASimulator {
 			return;
 		}
 		
-		//Translation to machine code
-		long i = 0x100;
-		for (String line : code) {
-			byte[] arr = line.getBytes();
-			ripValues.add(i);
-			for (byte b : arr) 
-				addresses.put(i++, b);
-			addresses.put(i++, (byte)0);
-		}
-		registers.put("RIP", ripValues.get(0));
-		
+		translateToMachineCode(0x100);
 		interpretCode();
 		scanner.close();
 	}
@@ -382,8 +485,7 @@ public class ISASimulator {
 				result = addresses.get(registers.get(arg));
 			else if (arg.startsWith("0X")) {
 				long address = Long.parseLong(arg.substring(2), 16);
-				byte b = addresses.get(address);
-				result = registers.get(arg) + b;
+				result = addresses.get(address);
 			}
 			else 
 				result = addresses.get(Long.parseLong(arg));
